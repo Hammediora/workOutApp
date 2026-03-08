@@ -8,6 +8,7 @@ import { savePlan, getAlternativeExercise } from "@/app/onboarding/actions";
 import type { GeneratedWorkoutProgram } from "@/lib/workout/types";
 import { ClockIcon } from "@/components/workout/icons";
 import { DayCard } from "@/components/workout/day-card";
+import { DayDrawer } from "@/components/workout/day-drawer";
 import { ProgressionNote } from "@/components/workout/progression-note";
 
 const GOAL_LABELS: Record<string, string> = {
@@ -112,7 +113,7 @@ export default function PreviewPage() {
           Starting Monday with {schedule[0].workoutDay?.focus ?? "Active Recovery"}.
           Use the Swap button if an exercise doesn't suit your equipment.
         </p>
-        <div className="flex items-center gap-5 text-xs text-muted-foreground pt-1">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted-foreground pt-1">
           <span className="flex items-center gap-1.5">
             <ClockIcon className="w-3.5 h-3.5" />
             {totalMinutes} min / week
@@ -142,12 +143,23 @@ export default function PreviewPage() {
                 {item.dayName}
               </div>
               <div className="ml-6 sm:ml-8">
-                <DayCard
-                  day={item.workoutDay}
-                  defaultOpen={i === 0}
-                  onSwap={handleSwap}
-                  swappingId={swappingId}
-                />
+                {/* Mobile: bottom sheet drawer */}
+                <div className="md:hidden">
+                  <DayDrawer
+                    day={item.workoutDay}
+                    onSwap={handleSwap}
+                    swappingId={swappingId}
+                  />
+                </div>
+                {/* Desktop: inline accordion */}
+                <div className="hidden md:block">
+                  <DayCard
+                    day={item.workoutDay}
+                    defaultOpen={i === 0}
+                    onSwap={handleSwap}
+                    swappingId={swappingId}
+                  />
+                </div>
               </div>
             </div>
           ) : (
@@ -167,7 +179,7 @@ export default function PreviewPage() {
       </div>
 
       {/* CTA */}
-      <div className="rounded-2xl border border-border p-8 space-y-4">
+      <div className="rounded-2xl border border-border p-5 sm:p-8 space-y-4">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
             Ready to train
@@ -177,13 +189,14 @@ export default function PreviewPage() {
         <p className="text-sm text-muted-foreground leading-relaxed max-w-sm">
           Sign in to save your plan, track weights each session, and log progress week by week.
         </p>
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 pt-2">
-          <Button size="lg" onClick={handleSave} disabled={isSaving} className="min-w-[180px]">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
+          <Button size="lg" onClick={handleSave} disabled={isSaving} className="w-full sm:w-auto sm:min-w-[180px]">
             {isSaving ? "Saving…" : "Sign in & Save Plan"}
           </Button>
           <Button
             size="lg"
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => {
               sessionStorage.removeItem("workoutPreview");
               router.push("/onboarding");
