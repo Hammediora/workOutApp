@@ -7,28 +7,73 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: Build & Deploy
-    runs-on: self-hosted
-    timeout-minutes: 15
+  build-and-push:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-      # ── SSH setup ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/hammediora/workoutapp:latest
+            ghcr.io/hammediora/workoutapp:${{ github.sha }}
+
+  deploy:
+    name: Deploy on the-boss
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
       - name: Configure SSH
         run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          cp /home/gh-runner/.ssh/deploy_dev-deploy ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-          ssh-keygen -l -f ~/.ssh/deploy_key
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${{ secrets.SSH_PORT }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
-      # ── Assemble .env from individual secrets ────────────────────────────────
-      - name: Write .env to server
+      - name: Deploy on server
         run: |
-          ssh -i ~/.ssh/deploy_key infra@${{ secrets.DEPLOY_HOST }} \
-            "sudo mkdir -p /opt/apps/workoutapp && sudo chown -R infra:infra /opt/apps/workoutapp && cat > /opt/apps/workoutapp/.env" << EOF
+          ssh -p "${{ secrets.SSH_PORT }}" -i ~/.ssh/id_ed25519 "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" << 'EOF'
+          set -euo pipefail
+
+          APP_DIR="/opt/apps/workoutapp"
+          mkdir -p "$APP_DIR"
+          cd "$APP_DIR"
+
+          cat > docker-compose.prod.yml << 'COMPOSE_EOF'
+          services:
+            app:
+              image: ghcr.io/hammediora/workoutapp:latest
+              container_name: workoutapp-app
+              restart: unless-stopped
+              ports:
+                - "127.0.0.1:3020:3000"
+              env_file:
+                - .env
+          COMPOSE_EOF
+
+          cat > .env << ENV_EOF
           NODE_ENV=production
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           DATABASE_URL=${{ secrets.DATABASE_URL }}
           AUTH_SECRET=${{ secrets.AUTH_SECRET }}
           AUTH_GOOGLE_ID=${{ secrets.AUTH_GOOGLE_ID }}
@@ -36,99 +81,33 @@ jobs:
           AUTH_TRUST_HOST=true
           WGER_TOKEN=${{ secrets.WGER_TOKEN }}
           MUSCLEWIKI_API_KEY=${{ secrets.MUSCLEWIKI_API_KEY }}
-          NEXTAUTH_URL=https://workout.bellocraft.com
-          EOF
+          NEXTAUTH_URL=${{ secrets.NEXTAUTH_URL }}
+          ENV_EOF
 
-      # ── Save current commit for rollback ─────────────────────────────────────
-      - name: Save rollback point
-        run: |
-          ssh -i ~/.ssh/deploy_key infra@${{ secrets.DEPLOY_HOST }} \
-            "rm -f /tmp/workoutapp_rollback_commit && cd /opt/apps/workoutapp 2>/dev/null && git rev-parse --verify HEAD > /tmp/workoutapp_rollback_commit 2>/dev/null || true"
-
-      # ── Pull & build ─────────────────────────────────────────────────────────
-      - name: Pull latest code and build containers
-        run: |
-          ssh -i ~/.ssh/deploy_key infra@${{ secrets.DEPLOY_HOST }} << 'DEPLOY_EOF'
-          set -euo pipefail
-
-          sudo mkdir -p /opt/apps/workoutapp
-          sudo chown -R infra:infra /opt/apps/workoutapp
-          cd /opt/apps/workoutapp
-
-          # Initialize git repo if empty
-          if [ ! -d .git ]; then
-            git init
-            git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Hammediora/workOutApp.git
-          else
-            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/Hammediora/workOutApp.git
+          if [ -n "${{ secrets.GHCR_PAT }}" ]; then
+            echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
           fi
 
-          git fetch origin master
-          git reset --hard origin/master
-
-          export DOCKER_BUILDKIT=1
-          docker compose -f docker-compose.prod.yml build
+          docker compose -f docker-compose.prod.yml pull
           docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
-          # Run Prisma migrations after DB is up
-          echo "==> Running Prisma migrations..."
-          docker compose -f docker-compose.prod.yml exec -T app npx prisma migrate deploy
-          DEPLOY_EOF
-
-      # ── Health checks ────────────────────────────────────────────────────────
-      - name: Health check
-        run: |
-          ssh -i ~/.ssh/deploy_key infra@${{ secrets.DEPLOY_HOST }} << 'EOF'
-          set -euo pipefail
-          cd /opt/apps/workoutapp
-
-          echo "==> Checking app on :3020 ..."
+          echo "==> Health check on 127.0.0.1:3020"
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:3020/ >/dev/null 2>&1; then
-              echo "    App is healthy!"
+              echo "App is healthy"
               break
             fi
             if [ "$i" -eq 30 ]; then
-              echo "    Health check FAILED"
-              docker compose -f docker-compose.prod.yml logs app --tail 50
+              echo "Health check failed"
+              docker compose -f docker-compose.prod.yml logs app --tail 80
               exit 1
             fi
             sleep 2
           done
 
-          echo "==> All services healthy"
+          docker image prune -af --filter 'until=168h'
           EOF
-
-      # ── Rollback on failure ───────────────────────────────────────────────────
-      - name: Rollback on failure
-        if: failure()
-        run: |
-          ssh -i ~/.ssh/deploy_key infra@${{ secrets.DEPLOY_HOST }} << 'EOF'
-          set -euo pipefail
-          cd /opt/apps/workoutapp
-          PREV=$(cat /tmp/workoutapp_rollback_commit 2>/dev/null || echo "")
-          if [ -z "$PREV" ]; then
-            echo "No rollback point saved, skipping"
-            exit 0
-          fi
-          echo "==> Rolling back to $PREV ..."
-          git reset --hard $PREV
-          if [ ! -f docker-compose.prod.yml ]; then
-            echo "No docker-compose.prod.yml at rollback point, skipping rebuild"
-            exit 0
-          fi
-          docker compose -f docker-compose.prod.yml build
-          docker compose -f docker-compose.prod.yml up -d --remove-orphans
-          echo "==> Rollback complete"
-          EOF
-
-      # ── Cleanup ──────────────────────────────────────────────────────────────
-      - name: Clean up old Docker images
-        if: success()
-        run: |
-          ssh -i ~/.ssh/deploy_key infra@${{ secrets.DEPLOY_HOST }} \
-            "docker image prune -af --filter 'until=168h'"
 
       - name: Remove SSH key
         if: always()
-        run: rm -f ~/.ssh/deploy_key
+        run: rm -f ~/.ssh/id_ed25519
