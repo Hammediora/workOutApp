@@ -1,10 +1,15 @@
 export const dynamic = "force-dynamic";
 
 import { auth } from "@/auth";
+import { redirect } from "next/navigation";
 import { OnboardingWizard } from "./wizard";
 
 export default async function OnboardingPage() {
-  const session = await auth().catch(() => null);
+  const session = await auth();
+  
+  if (!session?.user) {
+    redirect("/login");
+  }
 
   return (
     <div className="w-full max-w-lg mx-auto">
@@ -12,7 +17,7 @@ export default async function OnboardingPage() {
         <h1 className="text-3xl font-semibold tracking-tight">Let's build your plan.</h1>
         <p className="text-muted-foreground">Answer a few questions to generate your optimal training split.</p>
       </div>
-      <OnboardingWizard userId={session?.user?.id} />
+      <OnboardingWizard userId={session.user.id} />
     </div>
   );
 }
