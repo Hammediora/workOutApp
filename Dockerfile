@@ -4,7 +4,6 @@ WORKDIR /app
 
 COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts
-RUN npx prisma generate --schema=prisma/schema.prisma
 
 # ── Stage 2: Build the Next.js app ────────────────────────────────────────────
 FROM node:22-alpine AS builder
